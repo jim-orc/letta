@@ -122,6 +122,13 @@ class LLMClient:
                     put_inner_thoughts_first=put_inner_thoughts_first,
                     actor=actor,
                 )
+            case ProviderType.litellm:
+                from letta.llm_api.openai_client import OpenAIClient
+
+                return OpenAIClient(
+                    put_inner_thoughts_first=put_inner_thoughts_first,
+                    actor=actor,
+                )
             case _:
                 from letta.llm_api.openai_client import OpenAIClient
 

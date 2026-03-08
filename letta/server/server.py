@@ -54,6 +54,7 @@ from letta.schemas.providers import (
     GoogleVertexProvider,
     GroqProvider,
     LettaProvider,
+    LiteLLMProvider,
     LMStudioOpenAIProvider,
     MiniMaxProvider,
     OllamaProvider,
@@ -360,6 +361,20 @@ class SyncServer(object):
                 OpenRouterProvider(
                     name=model_settings.openrouter_handle_base if model_settings.openrouter_handle_base else "openrouter",
                     api_key_enc=Secret.from_plaintext(model_settings.openrouter_api_key),
+                )
+            )
+        if model_settings.litellm_api_base and model_settings.litellm_api_key:
+            litellm_base = (
+                model_settings.litellm_api_base
+                if model_settings.litellm_api_base.endswith("/v1")
+                else model_settings.litellm_api_base + "/v1"
+            )
+            self._enabled_providers.append(
+                LiteLLMProvider(
+                    name=model_settings.litellm_handle_base if model_settings.litellm_handle_base else "litellm",
+                    api_key_enc=Secret.from_plaintext(model_settings.litellm_api_key),
+                    base_url=litellm_base,
+                    provider_category=ProviderCategory.base,
                 )
             )
 

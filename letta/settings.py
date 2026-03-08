@@ -224,6 +224,11 @@ class ModelSettings(BaseSettings):
     # lmstudio
     lmstudio_base_url: Optional[str] = None
 
+    # LiteLLM
+    litellm_api_key: Optional[str] = None
+    litellm_api_base: Optional[str] = None
+    litellm_handle_base: Optional[str] = None
+
     # openllm
     openllm_auth_type: Optional[str] = None
     openllm_api_key: Optional[str] = None

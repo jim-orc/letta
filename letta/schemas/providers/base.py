@@ -189,6 +189,7 @@ class Provider(ProviderBase):
             GoogleVertexProvider,
             GroqProvider,
             LettaProvider,
+            LiteLLMProvider,
             LMStudioOpenAIProvider,
             MiniMaxProvider,
             MistralProvider,
@@ -208,6 +209,8 @@ class Provider(ProviderBase):
         match self.provider_type:
             case ProviderType.letta:
                 return LettaProvider(**self.model_dump(exclude_none=True))
+            case ProviderType.litellm:
+                return LiteLLMProvider(**self.model_dump(exclude_none=True))
             case ProviderType.openai:
                 return OpenAIProvider(**self.model_dump(exclude_none=True))
             case ProviderType.anthropic:

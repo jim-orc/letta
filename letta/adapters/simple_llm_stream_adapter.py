@@ -90,6 +90,7 @@ class SimpleLLMStreamAdapter(LettaLLMStreamAdapter):
             ProviderType.openrouter,
             ProviderType.zai,
             ProviderType.chatgpt_oauth,
+            ProviderType.litellm,
         ]:
             # Decide interface based on payload shape
             use_responses = "input" in request_data and "messages" not in request_data

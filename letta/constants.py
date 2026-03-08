@@ -26,6 +26,7 @@ PROVIDER_ORDER = {
     "lmstudio": 13,
     "zai": 14,
     "openrouter": 15,
+    "litellm": 16,
 }
 
 ADMIN_PREFIX = "/v1/admin"

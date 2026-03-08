@@ -63,6 +63,7 @@ class ProviderType(str, Enum):
     hugging_face = "hugging-face"
     letta = "letta"
     lmstudio_openai = "lmstudio_openai"
+    litellm = "litellm"
     minimax = "minimax"
     mistral = "mistral"
     ollama = "ollama"

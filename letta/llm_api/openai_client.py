@@ -41,7 +41,7 @@ from letta.log import get_logger
 from letta.otel.tracing import trace_method
 from letta.schemas.agent import AgentType
 from letta.schemas.embedding_config import EmbeddingConfig
-from letta.schemas.enums import ProviderCategory
+from letta.schemas.enums import ProviderCategory, ProviderType
 from letta.schemas.letta_message_content import MessageContentType
 from letta.schemas.llm_config import LLMConfig
 from letta.schemas.message import Message as PydanticMessage
@@ -156,9 +156,111 @@ def requires_auto_tool_choice(llm_config: LLMConfig) -> bool:
     return False
 
 
-def use_responses_api(llm_config: LLMConfig) -> bool:
+def use_responses_api(llm_config: LLMConfig, tools: list[dict] | None = None) -> bool:
     # TODO can opt in all reasoner models to use the Responses API
-    return is_openai_reasoning_model(llm_config.model)
+    if is_openai_reasoning_model(llm_config.model):
+        return True
+
+    # LiteLLM can front multiple backends and normalize OpenAI Responses API behavior.
+    # When we see explicit reasoning config or tool usage, prefer Responses API to avoid
+    # lossy routing through /chat/completions for models that require /responses.
+    if llm_config.model_endpoint_type == ProviderType.litellm:
+        if llm_config.reasoning_effort is not None:
+            return True
+        if tools:
+            return True
+
+    return False
+
+
+def _is_litellm_request(llm_config: LLMConfig) -> bool:
+    return llm_config.model_endpoint_type == ProviderType.litellm
+
+
+def _is_responses_payload(request_data: dict) -> bool:
+    return "input" in request_data and "messages" not in request_data
+
+
+def _is_litellm_responses_fallback_error(error: Exception) -> bool:
+    """Return True when LiteLLM should fall back from /responses to /chat/completions."""
+
+    if isinstance(error, (openai.NotFoundError, openai.UnprocessableEntityError)):
+        return True
+
+    if isinstance(error, openai.BadRequestError):
+        error_text = str(error).lower()
+        return any(
+            marker in error_text
+            for marker in [
+                "responses",
+                "response_format",
+                "unsupported",
+                "not implemented",
+                "unknown parameter",
+            ]
+        )
+
+    return False
+
+
+def _convert_responses_payload_to_chat_payload(request_data: dict) -> dict:
+    """Best-effort conversion from Responses payload shape to Chat Completions shape."""
+
+    chat_payload = dict(request_data)
+    input_items = chat_payload.pop("input", [])
+
+    messages: list[dict] = []
+    for item in input_items:
+        role = item.get("role", "user")
+        content = item.get("content")
+
+        if isinstance(content, list):
+            text_parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "input_text"]
+            normalized_content = "\n".join([part for part in text_parts if part])
+        else:
+            normalized_content = content or ""
+
+        messages.append({"role": role, "content": normalized_content})
+
+    if messages:
+        chat_payload["messages"] = messages
+
+    response_tools = chat_payload.pop("tools", None)
+    if response_tools:
+        chat_tools = []
+        for tool in response_tools:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") != "function":
+                continue
+
+            function_tool = {
+                "name": tool.get("name"),
+                "description": tool.get("description"),
+                "parameters": tool.get("parameters"),
+            }
+            if "strict" in tool:
+                function_tool["strict"] = tool["strict"]
+
+            chat_tools.append({"type": "function", "function": function_tool})
+
+        if chat_tools:
+            chat_payload["tools"] = chat_tools
+
+    response_tool_choice = chat_payload.pop("tool_choice", None)
+    if isinstance(response_tool_choice, dict) and response_tool_choice.get("type") == "function":
+        chat_payload["tool_choice"] = {
+            "type": "function",
+            "function": {"name": response_tool_choice.get("name")},
+        }
+    elif response_tool_choice is not None:
+        chat_payload["tool_choice"] = response_tool_choice
+
+    chat_payload.pop("store", None)
+    chat_payload.pop("include", None)
+    chat_payload.pop("reasoning", None)
+    chat_payload.pop("text", None)
+    return chat_payload
 
 
 def supports_content_none(llm_config: LLMConfig) -> bool:
@@ -471,7 +573,7 @@ class OpenAIClient(LLMClientBase):
         Constructs a request object in the expected data format for the OpenAI API.
         """
         # Shortcut for GPT-5 to use Responses API, but only for letta_v1_agent
-        if use_responses_api(llm_config) and agent_type == AgentType.letta_v1_agent:
+        if use_responses_api(llm_config, tools=tools) and agent_type == AgentType.letta_v1_agent:
             return self.build_request_data_responses(
                 agent_type=agent_type,
                 messages=messages,
@@ -680,7 +782,7 @@ class OpenAIClient(LLMClientBase):
         client = OpenAI(**self._prepare_client_kwargs(llm_config))
         # Route based on payload shape: Responses uses 'input', Chat Completions uses 'messages'
         try:
-            if "input" in request_data and "messages" not in request_data:
+            if _is_responses_payload(request_data):
                 resp = client.responses.create(**request_data)
                 return resp.model_dump()
             else:
@@ -693,6 +795,13 @@ class OpenAIClient(LLMClientBase):
                 code=ErrorCode.INTERNAL_SERVER_ERROR,
                 details={"json_error": str(e), "error_position": f"line {e.lineno} column {e.colno}"},
             )
+        except Exception as e:
+            if _is_litellm_request(llm_config) and _is_responses_payload(request_data) and _is_litellm_responses_fallback_error(e):
+                logger.warning("LiteLLM /responses request failed, falling back to /chat/completions: %s", e)
+                fallback_request_data = _convert_responses_payload_to_chat_payload(request_data)
+                response: ChatCompletion = client.chat.completions.create(**fallback_request_data)
+                return response.model_dump()
+            raise
 
     @trace_method
     async def request_async(self, request_data: dict, llm_config: LLMConfig) -> dict:
@@ -706,7 +815,7 @@ class OpenAIClient(LLMClientBase):
         client = AsyncOpenAI(**kwargs)
         # Route based on payload shape: Responses uses 'input', Chat Completions uses 'messages'
         try:
-            if "input" in request_data and "messages" not in request_data:
+            if _is_responses_payload(request_data):
                 resp = await client.responses.create(**request_data)
                 return resp.model_dump()
             else:
@@ -719,6 +828,13 @@ class OpenAIClient(LLMClientBase):
                 code=ErrorCode.INTERNAL_SERVER_ERROR,
                 details={"json_error": str(e), "error_position": f"line {e.lineno} column {e.colno}"},
             )
+        except Exception as e:
+            if _is_litellm_request(llm_config) and _is_responses_payload(request_data) and _is_litellm_responses_fallback_error(e):
+                logger.warning("LiteLLM /responses request failed, falling back to /chat/completions: %s", e)
+                fallback_request_data = _convert_responses_payload_to_chat_payload(request_data)
+                response: ChatCompletion = await client.chat.completions.create(**fallback_request_data)
+                return response.model_dump()
+            raise
 
     def is_reasoning_model(self, llm_config: LLMConfig) -> bool:
         return is_openai_reasoning_model(llm_config.model)
@@ -925,7 +1041,7 @@ class OpenAIClient(LLMClientBase):
         client = AsyncOpenAI(**kwargs)
 
         # Route based on payload shape: Responses uses 'input', Chat Completions uses 'messages'
-        if "input" in request_data and "messages" not in request_data:
+        if _is_responses_payload(request_data):
             try:
                 response_stream: AsyncStream[ResponseStreamEvent] = await client.responses.create(
                     **request_data,
@@ -933,6 +1049,15 @@ class OpenAIClient(LLMClientBase):
                     # stream_options={"include_usage": True},
                 )
             except Exception as e:
+                if _is_litellm_request(llm_config) and _is_litellm_responses_fallback_error(e):
+                    logger.warning("LiteLLM /responses stream failed, falling back to /chat/completions stream: %s", e)
+                    fallback_request_data = _convert_responses_payload_to_chat_payload(request_data)
+                    response_stream = await client.chat.completions.create(
+                        **fallback_request_data,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                    return response_stream
                 logger.error(f"Error streaming OpenAI Responses request: {e} with request data: {json.dumps(request_data)}")
                 raise e
         else:

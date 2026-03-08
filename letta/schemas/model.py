@@ -51,6 +51,7 @@ class Model(LLMConfig, ModelBase):
         "zai",
         "openrouter",
         "chatgpt_oauth",
+        "litellm",
     ] = Field(..., description="Deprecated: Use 'provider_type' field instead. The endpoint type for the model.", deprecated=True)
     context_window: int = Field(
         ..., description="Deprecated: Use 'max_context_window' field instead. The context window size for the model.", deprecated=True
@@ -141,6 +142,7 @@ class Model(LLMConfig, ModelBase):
             ProviderType.together: TogetherModelSettings,
             ProviderType.bedrock: BedrockModelSettings,
             ProviderType.openrouter: OpenRouterModelSettings,
+            ProviderType.litellm: LiteLLMModelSettings,
         }
 
         settings_class = PROVIDER_SETTINGS_MAP.get(self.provider_type)
@@ -255,6 +257,10 @@ class OpenAIModelSettings(ModelSettings):
             "parallel_tool_calls": self.parallel_tool_calls,
             "strict": self.strict,
         }
+
+
+class LiteLLMModelSettings(OpenAIModelSettings):
+    provider_type: Literal[ProviderType.litellm] = Field(ProviderType.litellm, description="The type of the provider.")
 
 
 #    "thinking": {
@@ -516,6 +522,7 @@ class ChatGPTOAuthModelSettings(ModelSettings):
 ModelSettingsUnion = Annotated[
     Union[
         OpenAIModelSettings,
+        LiteLLMModelSettings,
         AnthropicModelSettings,
         GoogleAIModelSettings,
         GoogleVertexModelSettings,
